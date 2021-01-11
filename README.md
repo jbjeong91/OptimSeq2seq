@@ -1,6 +1,6 @@
 ## Note
 
-The codes is for my paper, and it is modified based on the CopyMTL [repo](https://github.com/WindChimeRan/CopyMTL). Some parts from original repo have been deleted and modified.
+The codes is for my paper work, and it is modified based on the CopyMTL [repo](https://github.com/WindChimeRan/CopyMTL). Some parts from original repo have been deleted and modified.
 
 ## Environment
 
