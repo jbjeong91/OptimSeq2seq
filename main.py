@@ -12,7 +12,7 @@ import evaluation
 from model import Seq2seq
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--gpu_ues', '-g', type=str, default='True', help='Ture or False')
+parser.add_argument('--gpu_use', type=str, default='True', help='Ture or False')
 #parser.add_argument('--gpu', '-g', type=str, default='0', help='gpu id')
 parser.add_argument('--mode', '-m', type=str, default='train', help='train/valid/test')
 parser.add_argument('--cell', '-c', type=str, default='lstm', help='gru/lstm')
