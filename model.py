@@ -4,10 +4,11 @@ import os
 import const
 import json
 
+import math
 import torch.nn as nn
 import torch
 import torch.nn.functional as F
-
+# named SOTA + dec_attn + rel_attn
 # torch_bool
 try:
     torch_bool = torch.bool
@@ -18,13 +19,21 @@ class Encoder(nn.Module):
     def __init__(self, config: const.Config, embedding: nn.modules.sparse.Embedding) -> None:
         super(Encoder, self).__init__()
         self.config = config
+        #----------------------------------------------------------------------
+        from torch.nn import TransformerEncoder, TransformerEncoderLayer
+        self.model_type = 'Transformer'
+        self.src_mask = None
+        #self.pos_encoder = PositionalEncoding(ninp, dropout)
+        encoder_layers = TransformerEncoderLayer(d_model=100, nhead=10, dim_feedforward=200, dropout=0.3)
+        self.transformer_encoder = TransformerEncoder(encoder_layers, num_layers=2)
+        #-------------------------------------------------------------------------
 
         self.hidden_size = config.encoder_num_units
         self.emb_size = config.embedding_dim
         self.words_number = config.words_number
         self.maxlen = config.max_sentence_length
 
-        self.dropout = nn.Dropout(0.1)
+        self.dropout = nn.Dropout(0.3)
 
         self.embedding = embedding
         self.cell_name = config.cell_name
@@ -38,7 +47,7 @@ class Encoder(nn.Module):
     def forward(self, sentence: torch.Tensor, lengths: List[int]) -> Tuple[torch.Tensor, torch.Tensor]:
 
         embedded = self.embedding(sentence)
-
+        embedded = self.transformer_encoder(embedded)
         # embedded = self.dropout(embedded)
 
         if lengths:
@@ -46,6 +55,7 @@ class Encoder(nn.Module):
                 embedded, lengths=lengths, batch_first=True)
 
         output, hidden = self.rnn(embedded)
+        #print('@@@@@@jeong_enc_result_hidden', np.array(hidden).size)
 
         if lengths:
             output, _ = nn.utils.rnn.pad_packed_sequence(output, total_length=self.maxlen, batch_first=True)
@@ -65,6 +75,8 @@ class Decoder(nn.Module):
         super(Decoder, self).__init__()
 
         self.device = device
+        self.config = config
+        self.dropout = nn.Dropout(0.3)
 
         self.cell_name = config.cell_name
         self.decoder_type = config.decoder_type
@@ -75,7 +87,7 @@ class Decoder(nn.Module):
         self.maxlen = config.max_sentence_length
         self.decodelen = config.decoder_output_max_length
 
-        self.relation_eos = config.relation_number
+        #self.relation_eos = config.relation_number
         self.relation_number = config.relation_number
 
         self.word_embedding = embedding
@@ -83,18 +95,33 @@ class Decoder(nn.Module):
         self.sos_embedding = nn.Embedding(1, config.embedding_dim)
 
         self.combine_inputs = nn.Linear(self.hidden_size + self.emb_size, self.emb_size)
+        self.combine_inputs2 = nn.Linear(self.hidden_size + self.hidden_size, self.hidden_size)#jeong
+
+        self.combine_outputs = nn.Linear(self.emb_size + self.emb_size, self.emb_size)#jeong_1
+
         self.attn = nn.Linear(self.hidden_size * 2, 1)
 
         if self.cell_name == 'gru':
             self.rnn = nn.GRU(self.emb_size, self.hidden_size, batch_first=True)
         elif self.cell_name == 'lstm':
-            self.rnn = nn.LSTM(self.emb_size, self.hidden_size, batch_first=True)
+            self.rnn = nn.LSTM(self.emb_size, self.hidden_size, batch_first=True, dropout=0.3)
 
         self.do_eos = nn.Linear(self.hidden_size, 1)
         self.do_predict = nn.Linear(self.hidden_size, self.relation_number)
 
+        self.k_size = 3
+        self.channel = 100
+        self.combine_rel_inputs = nn.Linear(self.channel + self.emb_size, self.emb_size)
+        self.do_rel_eos = nn.Linear(self.channel, 1)
+        self.do_rel_predict = nn.Linear(self.channel, self.relation_number)
+
         self.fuse = nn.Linear(self.hidden_size * 2, 100)
         self.do_copy_linear = nn.Linear(100, 1)
+        #----------------------------------------------------------------------------jeong_calc_new
+        self.linear_ctx = nn.Linear(self.hidden_size, self.hidden_size, bias=False)
+        self.linear_query = nn.Linear(self.hidden_size, self.hidden_size, bias=True)
+        self.v = nn.Linear(self.hidden_size, 1)
+        #----------------------------------------------------------------------------
 
     def calc_context(self, decoder_state: torch.Tensor, encoder_outputs: torch.Tensor) -> torch.Tensor:
 
@@ -105,6 +132,59 @@ class Decoder(nn.Module):
         attn_applied = torch.bmm(attn_weight.permute(0, 2, 1), encoder_outputs).squeeze(1)
 
         return attn_applied
+
+    def calc_context_new(self, decoder_state: torch.Tensor, encoder_outputs: torch.Tensor) -> torch.Tensor:
+        #print('@@@@@@@@@@@@@@@@jeong_calc_dec',decoder_state.size()) #size([1,100,1000]
+        #print('@@@@@@@@@@@@@@@@jeong_calc_enc', encoder_outputs.size())  #size([100,80,1000]
+        decoder_state = decoder_state.permute(1,0,2) #size([100,1,1000]
+        decoder_state = decoder_state.repeat(1, encoder_outputs.size()[1], 1)
+        #print('@@@@@@@@@@@@@@@@jeong_calc_dec2', decoder_state.size()) #size([100,80,1000]
+        uh = self.linear_ctx(encoder_outputs)
+        wq = self.linear_query(decoder_state)
+        wquh = torch.tanh(wq + uh)
+        attn_weights = self.v(wquh).squeeze()
+        #attn_weights.data.masked_fill_(src_mask.data, -float("inf"))
+        attn_weights = F.softmax(attn_weights, dim=-1)
+
+        # print(attn_weights)
+        # print(src_mask)
+        # print(torch.sum(attn_weights != attn_weights).any())
+        # print('-----')
+
+        # if torch.sum(attn_weights != attn_weights).any() > 0:
+        #     exit()
+
+        attn_applied = torch.bmm(attn_weights.unsqueeze(1), encoder_outputs).squeeze()
+        #print('@@@@@@@@@@@@@@@@jeong_calc_context',attn_applied.size())#size([100,1000])
+
+        return attn_applied
+
+    def extract_relation(self, decoder_state: torch.Tensor, encoder_outputs: torch.Tensor) -> torch.Tensor:
+
+        # decoder_state.size() == torch.Size([1, 100, 1000])
+        # -> torch.Size([100, 1, 1000]) -> torch.Size([100, 80, 1000])
+        decoder_state = decoder_state.permute(1, 0, 2).expand_as(encoder_outputs)
+        # torch.Size([100, 80, 1000]) -> torch.Size([100, 1000, 80])
+        decoder_state = decoder_state.permute(0, 2, 1)
+        attned_encoder_output = torch.bmm(encoder_outputs, decoder_state)  # [100, 80, 80]
+
+        conv_emb = attned_encoder_output.unsqueeze(dim=1)  # [100,1,80,80]
+
+        conv1 = torch.nn.Conv1d(in_channels=1, out_channels=self.channel, kernel_size=(self.k_size, self.maxlen),
+                                stride=1).to(self.device)
+        conv_emb = conv1(conv_emb)  # [100,10,76,1]
+        conv_emb = conv_emb.squeeze(dim=-1)  # [100,10,76]
+        conv_emb = F.relu(conv_emb)
+        max_pooling = torch.nn.MaxPool2d((1, self.maxlen - (self.k_size -1)), stride=1)
+        conv_emb = max_pooling(conv_emb) #[100,10,1]
+        conv_emb = self.dropout(conv_emb)
+        #print('@@@jeong_conv_emb', conv_emb.size())  # [100, 10, 1]
+        conv_emb = conv_emb.squeeze(dim=-1)
+        #print('@@@jeong_conv_emb',conv_emb.size()) #[100, 100]
+
+
+        return conv_emb
+
 
     def do_copy(self, output: torch.Tensor, encoder_outputs: torch.Tensor) -> torch.Tensor:
 
@@ -118,38 +198,67 @@ class Decoder(nn.Module):
                      emb: torch.Tensor,
                      decoder_state: torch.Tensor,
                      encoder_outputs: torch.Tensor,
-                     first_entity_mask: torch.Tensor) \
+                     first_entity_mask: torch.Tensor,
+                     dec_states,
+                     t) \
             -> Tuple[Tuple[torch.Tensor, torch.Tensor], torch.Tensor]:
 
         if self.cell_name == 'gru':
             decoder_state_h = decoder_state
         elif self.cell_name == 'lstm':
             decoder_state_h = decoder_state[0]
+            #print('@@jeong_decoder_state_h', decoder_state_h.size())
+            #print('@@jeong_decoder_state', decoder_state.size())
+            #print('@@jeong_decoder_state[0]', decoder_state[0].size())
+            #print('@@jeong_decoder_state[1]', decoder_state[1].size())
         else:
             raise ValueError('cell name should be lstm or gru')
 
-        context = self.calc_context(decoder_state_h, encoder_outputs)
+        #print('@@jeong_decoder_state', decoder_state_h.size())
+        #print('@@jeong_encoder_state', encoder_outputs.size())
+        if t != 0:
+            dec_states = dec_states
+            dec_states.append(decoder_state_h.squeeze(0))
+            dec_states = torch.stack(dec_states, dim=1)
+            decoder_state_h = self.calc_context_new(decoder_state_h, dec_states)
+            decoder_state_h = decoder_state_h.unsqueeze(0)
+            #print('@@jeong_decoder_state_new', decoder_state_h.size())
 
-        output = self.combine_inputs(torch.cat((emb, context), dim=1))
-
+        context = self.calc_context_new(decoder_state_h, encoder_outputs)
+        if t%3==0:
+            rel_context = self.extract_relation(decoder_state_h, encoder_outputs)
+            output = self.combine_rel_inputs(torch.cat((emb, rel_context), dim=1))
+        else:
+            output = self.combine_inputs(torch.cat((emb, context), dim=1))
         output, decoder_state = rnn_cell(output.unsqueeze(1), decoder_state)
-
         output = output.squeeze()
+
 
         # eos_logits = F.selu(self.do_eos(output))
         # predict_logits = F.selu(self.do_predict(output))
+        '''
+        if t % 3 == 0:
+            eos_logits = (self.do_eos(output))
+            predict_logits = (self.do_predict(output))
+            rel_logits, rel_eos_logits = self.extract_relation(decoder_state_h, encoder_outputs)
+            eos_logits += rel_eos_logits
+            predict_logits += rel_logits
+            predict_logits = F.log_softmax(torch.cat((predict_logits, eos_logits), dim=1), dim=1)
+        else:
+            eos_logits = (self.do_eos(output))
+            predict_logits = (self.do_predict(output))
+            predict_logits = F.log_softmax(torch.cat((predict_logits, eos_logits), dim=1), dim=1)
+        '''
         eos_logits = (self.do_eos(output))
         predict_logits = (self.do_predict(output))
-
         predict_logits = F.log_softmax(torch.cat((predict_logits, eos_logits), dim=1), dim=1)
-
+        '''
+        if t % 3 == 0:
+            rel_logits, rel_eos_logits = self.extract_relation(decoder_state_h, encoder_outputs)
+            #rel_predict_logits = F.log_softmax(torch.cat((rel_logits, rel_eos_logits), dim=1), dim=1)
+            #predict_logits += rel_predict_logits
+        '''
         copy_logits = self.do_copy(output, encoder_outputs)
-
-        # assert copy_logits.size() == first_entity_mask.size()
-        # original
-        # copy_logits = copy_logits * first_entity_mask
-        # copy_logits = copy_logits
-
         copy_logits = torch.cat((copy_logits, eos_logits), dim=1)
         copy_logits = F.log_softmax(copy_logits, dim=1)
 
@@ -194,6 +303,7 @@ class MultiDecoder(Decoder):
 
         go = torch.zeros(sentence.size()[0], dtype=torch.int64).to(self.device)
         output = self.sos_embedding(go)
+        rel_output = None #jeong_1
 
         first_entity_mask = torch.ones(go.size()[0], self.maxlen).to(self.device)
 
@@ -229,12 +339,16 @@ class MultiDecoder(Decoder):
                 # next time step
                 if t % 3 == 0:
                     output = max_action
+                    rel_output = self.relation_embedding(output)
                     output = self.relation_embedding(output)
 
                 else:
                     copy_index = torch.zeros_like(sentence).scatter_(1, max_action.unsqueeze(1), 1).to(torch_bool)
                     output = sentence[copy_index]
-                    output = self.word_embedding(output)
+                    #output = self.word_embedding(output)
+                    # jeong_1 ->
+                    output = torch.cat((rel_output, self.word_embedding(output)),dim=-1)
+                    output = self.combine_outputs(output)
 
                 if t % 3 == 1:
                     first_entity_mask = torch.ones(go.size()[0], self.maxlen + 1).to(self.device)
@@ -268,12 +382,15 @@ class OneDecoder(Decoder):
 
         go = torch.zeros(sentence.size()[0], dtype=torch.int64).to(self.device)
         output = self.sos_embedding(go)
+        rel_output = None  # jeong_1
 
         first_entity_mask = torch.ones(go.size()[0], self.maxlen).to(self.device)
 
+        raw_outputs = []
+        raw_outputs.append(decoder_state[0].squeeze(0))
         for t in range(self.decodelen):
-
-            bag, decoder_state = self._decode_step(self.rnn, output, decoder_state, encoder_outputs, first_entity_mask)
+            bag, decoder_state = self._decode_step(self.rnn, output, decoder_state, encoder_outputs, first_entity_mask, raw_outputs ,t)
+            raw_outputs.append(decoder_state[0].squeeze(0))
             predict_logits, copy_logits = bag
 
             if t % 3 == 0:
@@ -289,12 +406,21 @@ class OneDecoder(Decoder):
             # next time step
             if t % 3 == 0:
                 output = max_action
+                rel_output = self.relation_embedding(output)
                 output = self.relation_embedding(output)
-
+                # --------------------------------------------------------
+            elif t % 3 == 1:
+                copy_index = torch.zeros_like(sentence).scatter_(1, max_action.unsqueeze(1), 1).to(torch_bool)
+                output = sentence[copy_index]
+                # jeong_1 ->
+                # output = self.word_embedding(output)
+                output = torch.cat((rel_output, self.word_embedding(output)), dim=-1)
+                output = self.combine_outputs(output)
             else:
                 copy_index = torch.zeros_like(sentence).scatter_(1, max_action.unsqueeze(1), 1).to(torch_bool)
                 output = sentence[copy_index]
                 output = self.word_embedding(output)
+            # -------------------------------------------------------
 
             if t % 3 == 1:
                 first_entity_mask = torch.ones(go.size()[0], self.maxlen + 1).to(self.device)
@@ -308,6 +434,7 @@ class OneDecoder(Decoder):
                 first_entity_mask = torch.ones(go.size()[0], self.maxlen).to(self.device)
 
         return pred_action_list, pred_logits_list
+
 
 
 class Seq2seq(nn.Module):
@@ -325,7 +452,6 @@ class Seq2seq(nn.Module):
         if load_emb:
             self.load_pretrain_emb(config)
         self.word_embedding.weight.requires_grad = update_emb
-
         self.encoder = Encoder(config, embedding=self.word_embedding)
 
         if config.decoder_type == 'one':
