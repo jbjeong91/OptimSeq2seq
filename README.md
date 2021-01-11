@@ -26,10 +26,12 @@ NYT dataset:
 ## Run
 
 - Train on GPU or CPU
+
 `python main.py --gpu_use True --mode train --cell lstm`
 `python main.py --gpu_use False --mode train --cell lstm`
 
 - Test on GPU or CPU
+
 `python main.py --gpu_use True --mode test --cell lstm`
 `python main.py --gpu_use False --mode test --cell lstm`
 
