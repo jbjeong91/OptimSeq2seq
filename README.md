@@ -1,5 +1,5 @@
 ## Note
-The codes are modified based on the CopyMTL repo[repo](https://github.com/WindChimeRan/CopyMTL). Some parts from original repo have been deleted and modified.
+The codes are modified based on the CopyMTL [repo](https://github.com/WindChimeRan/CopyMTL). Some parts from original repo have been deleted and modified.
 
 ## Environment
 
