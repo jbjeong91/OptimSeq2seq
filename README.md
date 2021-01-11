@@ -1,4 +1,5 @@
-# 수정중..
+## Note
+The codes are modified based on the CopyMTL repo[repo](https://github.com/WindChimeRan/CopyMTL). Some parts from original repo have been deleted and modified.
 
 ## Environment
 
@@ -23,9 +24,13 @@ NYT dataset:
 
 ## Run
 
-`python main.py --gpu 0 --mode train --cell lstm --decoder_type one`
+- Train on GPU or CPU
+`python main.py --gpu_use True --mode train --cell lstm`
+`python main.py --gpu_use False --mode train --cell lstm`
 
-`python main.py --gpu 0 --mode test --cell lstm --decoder_type one`
+- Test on GPU or CPU
+`python main.py --gpu_use True --mode test --cell lstm`
+`python main.py --gpu_use False --mode test --cell lstm`
 
 
 
