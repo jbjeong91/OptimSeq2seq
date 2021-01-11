@@ -12,7 +12,8 @@ import evaluation
 from model import Seq2seq
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--gpu', '-g', type=str, default='0', help='gpu id')
+parser.add_argument('--gpu_ues', '-g', type=str, default='True', help='Ture or False')
+#parser.add_argument('--gpu', '-g', type=str, default='0', help='gpu id')
 parser.add_argument('--mode', '-m', type=str, default='train', help='train/valid/test')
 parser.add_argument('--cell', '-c', type=str, default='lstm', help='gru/lstm')
 parser.add_argument('--decoder_type', '-d', type=str, default='one', help='one/multi')
@@ -23,7 +24,8 @@ cell_name = args.cell
 decoder_type = args.decoder_type
 
 torch.manual_seed(77) # cpu
-torch.cuda.manual_seed(77) #gpu
+if args.gpu_use == True:
+    torch.cuda.manual_seed(77) #gpu
 
 
 class Evaluator(object):
@@ -172,8 +174,10 @@ if __name__ == '__main__':
     else:
         print('illegal dataset name: %s' % config.dataset_name)
         exit()
-
-    device = torch.device('cuda:' + args.gpu)
+    if args.gpu_use == True:
+        device = torch.device('cuda:' + args.gpu)
+    else:
+        device = torch.device('cpu')
 
     train = True if mode == 'train' else False
 
